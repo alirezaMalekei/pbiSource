@@ -1,6 +1,9 @@
 <?php
 // php xb.php cycle [--force]  -> ساخت دوباره دیتابیس از زنجیره بک‌آپ
 // php xb.php status           -> نمایش زنجیره و آخرین LSN اعمال‌شده
+
+date_default_timezone_set(getenv('TZ') ?: 'UTC');
+
 define('DB_CONTAINER', getenv('DB_CONTAINER') ?: 'pbisource-db');
 define('DEFAULT_UID', (int)(getenv('DB_UID') ?: 1001));
 const BACKUPS = '/backups';
@@ -8,6 +11,13 @@ const WORK    = '/work/restore';
 const DATADIR = '/var/lib/mysql';
 const STATE   = '/state/last_restored_lsn';
 const LOCK    = '/state/xb.lock';
+
+// xtrabackup در یک کانتینر موقت از ایمیج رسمی اجرا می‌شود
+const XB = 'docker run --rm --user root --entrypoint xtrabackup '
+         . '-v pbisource_mysql_data:/var/lib/mysql '
+         . '-v pbisource_restore_work:/work '
+         . '-v /srv/backups:/backups '
+         . 'percona/percona-xtrabackup:8.0';
 
 function logm(string $m): void { echo '[' . date('Y-m-d H:i:s') . "] $m\n"; }
 
@@ -24,7 +34,7 @@ function out(string $cmd): string {
     return trim((string)shell_exec($cmd . ' 2>/dev/null'));
 }
 
-// پوشه‌های .partial_* (ارسال ناقص) با glob دیده نمی‌شوند
+// پوشه‌های .partial_* با glob دیده نمی‌شوند
 function discover(): array {
     $items = [];
     foreach (glob(BACKUPS . '/*/xtrabackup_checkpoints') as $f) {
@@ -60,7 +70,6 @@ function bestChain(array $items): array {
     return $best;
 }
 
-// uid/gid کاربر mysql را از خود کانتینر db می‌خوانیم
 function dbOwner(): string {
     $id = out('docker exec ' . escapeshellarg(DB_CONTAINER) . ' id mysql');
     if (preg_match('/uid=(\d+).*gid=(\d+)/', $id, $m)) return "$m[1]:$m[2]";
@@ -78,6 +87,7 @@ function waitHealthy(int $timeout = 300): void {
 }
 
 function cycle(bool $force): void {
+    @mkdir('/state', 0755, true);
     $lock = fopen(LOCK, 'c');
     if (!flock($lock, LOCK_EX | LOCK_NB)) { logm('Another cycle is running. Exit.'); return; }
 
@@ -97,28 +107,28 @@ function cycle(bool $force): void {
     try {
         $owner = dbOwner();
 
-        // --- مرحله ۱: prepare (دیتابیس همچنان بالاست، downtime صفر) ---
+        // مرحله ۱: prepare (db هنوز روشن است)
         run('rm -rf ' . escapeshellarg(WORK));
         run('mkdir -p /work');
         run('cp -a ' . escapeshellarg($chain[0]['dir']) . ' ' . escapeshellarg(WORK));
 
         $last = count($chain) - 1;
-        run('xtrabackup --prepare ' . ($last > 0 ? '--apply-log-only ' : '')
+        run(XB . ' --prepare ' . ($last > 0 ? '--apply-log-only ' : '')
           . '--target-dir=' . escapeshellarg(WORK));
         for ($i = 1; $i <= $last; $i++) {
-            run('xtrabackup --prepare ' . ($i < $last ? '--apply-log-only ' : '')
+            run(XB . ' --prepare ' . ($i < $last ? '--apply-log-only ' : '')
               . '--target-dir=' . escapeshellarg(WORK)
               . ' --incremental-dir=' . escapeshellarg($chain[$i]['dir']));
         }
 
-        // --- مرحله ۲: جایگزینی datadir (اینجا db چند دقیقه خاموش است) ---
+        // مرحله ۲: جایگزینی datadir (db خاموش)
         run('docker stop -t 120 ' . escapeshellarg(DB_CONTAINER), false);
         run('find ' . DATADIR . ' -mindepth 1 -delete');
-        run('xtrabackup --copy-back --target-dir=' . escapeshellarg(WORK)
+        run(XB . ' --copy-back --target-dir=' . escapeshellarg(WORK)
           . ' --datadir=' . DATADIR);
         run("chown -R $owner " . DATADIR);
 
-        // --- مرحله ۳: بالا آوردن و بررسی ---
+        // مرحله ۳: روشن کردن
         run('docker start ' . escapeshellarg(DB_CONTAINER));
         waitHealthy();
 
@@ -134,7 +144,7 @@ function cycle(bool $force): void {
 
 function status(): void {
     $chain = bestChain(discover());
-    if (!$chain) { echo "No valid chain.\n"; }
+    if (!$chain) echo "No valid chain.\n";
     foreach ($chain as $c) echo "{$c['type']}  {$c['dir']}  [{$c['from']} -> {$c['to']}]\n";
     echo 'Last restored LSN: ' . (file_exists(STATE) ? trim(file_get_contents(STATE)) : 'none') . "\n";
 }
