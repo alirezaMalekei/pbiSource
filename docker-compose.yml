@@ -27,6 +27,8 @@ services:
       TZ: ${TZ:-UTC}
       DB_CONTAINER: pbisource-db
       DB_UID: "1001"
+    ports:
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - /srv/backups:/backups
