@@ -5,33 +5,36 @@ cd "$(dirname "$0")"
 SRC=xb-src
 BK=/srv/backups
 PW=srcpass
-IMG=percona/percona-server:8.0
-XB="docker run --rm --network container:$SRC -v xb_src_data:/var/lib/mysql -v $BK:/backups pbisource-scheduler"
+IMG=percona/percona-server:8.0.35-27     # باید با ایمیج db در compose یکی باشد
+XB="docker run --rm --user root --network container:$SRC -v xb_src_data:/var/lib/mysql -v $BK:/backups --entrypoint xtrabackup percona/percona-xtrabackup:8.0"
 Q="docker exec $SRC mysql -uroot -p$PW -N -e"
 BKARGS="--host=127.0.0.1 --user=root --password=$PW --datadir=/var/lib/mysql"
 
 echo "== 0) پاکسازی =="
+docker compose down -v 2>/dev/null || true
 docker rm -f $SRC 2>/dev/null || true
 docker volume rm xb_src_data 2>/dev/null || true
+sudo mkdir -p $BK
 sudo rm -rf $BK/*
 
 echo "== 1) ساخت ایمیج و دیتابیس منبع =="
 docker compose build scheduler
+docker pull percona/percona-xtrabackup:8.0
 docker run -d --name $SRC -e MYSQL_ROOT_PASSWORD=$PW -v xb_src_data:/var/lib/mysql $IMG >/dev/null
 until docker exec $SRC mysqladmin ping -uroot -p$PW --silent 2>/dev/null; do sleep 3; done
 sleep 10
 $Q "CREATE DATABASE testdb; CREATE TABLE testdb.t (id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(50)); INSERT INTO testdb.t (v) VALUES ('a'),('b');"
 
 echo "== 2) full =="
-$XB xtrabackup --backup $BKARGS --target-dir=/backups/full_1
+$XB --backup $BKARGS --target-dir=/backups/full_1
 
 echo "== 3) inc1 (+c) =="
 $Q "INSERT INTO testdb.t (v) VALUES ('c')"
-$XB xtrabackup --backup $BKARGS --target-dir=/backups/inc_1 --incremental-basedir=/backups/full_1
+$XB --backup $BKARGS --target-dir=/backups/inc_1 --incremental-basedir=/backups/full_1
 
 echo "== 4) inc2 (+d) =="
 $Q "INSERT INTO testdb.t (v) VALUES ('d')"
-$XB xtrabackup --backup $BKARGS --target-dir=/backups/inc_2 --incremental-basedir=/backups/inc_1
+$XB --backup $BKARGS --target-dir=/backups/inc_2 --incremental-basedir=/backups/inc_1
 
 echo "== 5) حذف دیتابیس منبع =="
 docker rm -f $SRC >/dev/null
