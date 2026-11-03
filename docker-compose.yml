@@ -1,7 +1,9 @@
+name: pbisource
+
 services:
   db:
     image: percona/percona-server:8.0
-    container_name: percona-db
+    container_name: pbisource-db
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
@@ -20,12 +22,12 @@ services:
 
   scheduler:
     build: .
-    container_name: percona-scheduler
+    container_name: pbisource-scheduler
     restart: unless-stopped
     command: ["supercronic", "/app/crontab"]
     environment:
       TZ: ${TZ:-UTC}
-      DB_CONTAINER: percona-db
+      DB_CONTAINER: pbisource-db
       DB_UID: "1001"          # فقط fallback؛ در حالت عادی از خود db خوانده می‌شود
     volumes:
       - mysql_data:/var/lib/mysql

@@ -1,8 +1,7 @@
 <?php
 // php xb.php cycle [--force]  -> ساخت دوباره دیتابیس از زنجیره بک‌آپ
 // php xb.php status           -> نمایش زنجیره و آخرین LSN اعمال‌شده
-
-define('DB_CONTAINER', getenv('DB_CONTAINER') ?: 'percona-db');
+define('DB_CONTAINER', getenv('DB_CONTAINER') ?: 'pbisource-db');
 define('DEFAULT_UID', (int)(getenv('DB_UID') ?: 1001));
 const BACKUPS = '/backups';
 const WORK    = '/work/restore';
