@@ -1,51 +1,51 @@
 <?php
-// php xb.php cycle [--force]  -> ساخت دوباره دیتابیس از زنجیره بک‌آپ
-// php xb.php status           -> نمایش زنجیره و آخرین LSN اعمال‌شده
+// php xb.php cycle [--force]  -> rebuild the database from the backup chain
+// php xb.php status           -> show the chain and the last applied LSN
 //
-// همه‌ی نام‌های وابسته به پروژه از متغیرهای محیطی (docker-compose / .env) خوانده می‌شود.
-// متغیرهای ضروری: PROJECT, DB_CONTAINER, DB_VOLUME, BACKUP_HOST_DIR
-// متغیرهای اختیاری: DB_UID, TZ, XB_IMAGE
+// All project-specific names are read from environment variables (docker-compose / .env).
+// Required: PROJECT, DB_CONTAINER, DB_VOLUME, BACKUP_HOST_DIR
+// Optional: DB_UID, TZ, XB_IMAGE
 
 date_default_timezone_set(getenv('TZ') ?: 'UTC');
 
-// متغیر ضروری: اگر نبود، با خطا متوقف شو (هیچ مقدار پیش‌فرضی نداریم تا روی پروژه‌ی اشتباه عمل نشود)
+// Required variable: exit with an error if missing (no defaults, so we never act on the wrong project)
 function need(string $name): string {
     $v = getenv($name);
     if ($v === false || $v === '') {
-        fwrite(STDERR, "خطا: متغیر محیطی $name تنظیم نشده است\n");
+        fwrite(STDERR, "Error: environment variable $name is not set\n");
         exit(1);
     }
     return $v;
 }
 
 $PROJECT   = need('PROJECT');
-$DB_VOLUME = need('DB_VOLUME');          // مثلاً test_mysql_data
-$HOST_BKP  = need('BACKUP_HOST_DIR');    // مثلاً /srv/backups/test (مسیر روی سرور میزبان)
+$DB_VOLUME = need('DB_VOLUME');          // e.g. test_mysql_data
+$HOST_BKP  = need('BACKUP_HOST_DIR');    // e.g. /srv/backups/test (path on the host server)
 $XB_IMAGE  = getenv('XB_IMAGE') ?: 'percona/percona-xtrabackup:8.0';
 
 if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $PROJECT)) {
-    fwrite(STDERR, "خطا: PROJECT نامعتبر است (فقط حروف کوچک، عدد، - و _)\n");
+    fwrite(STDERR, "Error: PROJECT is invalid (lowercase letters, digits, - and _ only)\n");
     exit(1);
 }
 if ($HOST_BKP[0] !== '/') {
-    fwrite(STDERR, "خطا: BACKUP_HOST_DIR باید مسیر مطلق باشد\n");
+    fwrite(STDERR, "Error: BACKUP_HOST_DIR must be an absolute path\n");
     exit(1);
 }
 
 define('DB_CONTAINER', need('DB_CONTAINER'));
 define('DEFAULT_UID', (int)(getenv('DB_UID') ?: 1001));
 
-// محافظ: نام کانتینر، volume و پوشه‌ی بکاپ باید همگی متعلق به همین پروژه باشند
+// Guards: the container, volume and backup directory must all belong to this project
 if (DB_CONTAINER !== "$PROJECT-db") {
-    fwrite(STDERR, "خطا: DB_CONTAINER (" . DB_CONTAINER . ") با PROJECT ($PROJECT-db) هماهنگ نیست\n");
+    fwrite(STDERR, "Error: DB_CONTAINER (" . DB_CONTAINER . ") does not match PROJECT ($PROJECT-db)\n");
     exit(1);
 }
 if ($DB_VOLUME !== "{$PROJECT}_mysql_data") {
-    fwrite(STDERR, "خطا: DB_VOLUME ($DB_VOLUME) با PROJECT ({$PROJECT}_mysql_data) هماهنگ نیست\n");
+    fwrite(STDERR, "Error: DB_VOLUME ($DB_VOLUME) does not match PROJECT ({$PROJECT}_mysql_data)\n");
     exit(1);
 }
 if (basename($HOST_BKP) !== $PROJECT) {
-    fwrite(STDERR, "خطا: BACKUP_HOST_DIR ($HOST_BKP) باید به پوشه‌ای با نام پروژه ($PROJECT) ختم شود\n");
+    fwrite(STDERR, "Error: BACKUP_HOST_DIR ($HOST_BKP) must end with a directory named after the project ($PROJECT)\n");
     exit(1);
 }
 
@@ -57,8 +57,8 @@ const DATADIR = '/var/lib/mysql';
 const STATE   = '/state/last_restored_lsn';
 const LOCK    = '/state/xb.lock';
 
-// xtrabackup در یک کانتینر موقت از ایمیج رسمی اجرا می‌شود
-// این دستور روی میزبان اجرا می‌شود، پس نام volume و مسیر واقعی سرور لازم است
+// xtrabackup runs in a temporary container from the official image.
+// This command runs on the host, so it needs the real volume name and server path.
 define('XB', 'docker run --rm --user root --entrypoint xtrabackup '
     . '-v ' . escapeshellarg($DB_VOLUME) . ':/var/lib/mysql '
     . '-v ' . escapeshellarg($WORK_VOLUME) . ':/work '
@@ -80,15 +80,15 @@ function out(string $cmd): string {
     return trim((string)shell_exec($cmd . ' 2>/dev/null'));
 }
 
-// اگر volume وجود نداشته باشد، docker run بی‌صدا یک volume خالی می‌سازد؛ پس قبل از شروع چک می‌کنیم
+// If a volume does not exist, docker run silently creates an empty one; so check before starting
 function requireVolume(string $name): void {
     passthru('docker volume inspect ' . escapeshellarg($name) . ' >/dev/null 2>&1', $code);
     if ($code !== 0) {
-        throw new RuntimeException("Volume $name وجود ندارد (نام پروژه یا DB_VOLUME را بررسی کنید)");
+        throw new RuntimeException("Volume $name does not exist (check the project name or DB_VOLUME)");
     }
 }
 
-// پوشه‌های .partial_* با glob دیده نمی‌شوند
+// .partial_* directories are not matched by glob
 function discover(): array {
     $items = [];
     foreach (glob(BACKUPS . '/*/xtrabackup_checkpoints') as $f) {
@@ -173,7 +173,7 @@ function cycle(bool $force): void {
     try {
         $owner = dbOwner();
 
-        // مرحله ۱: prepare (db هنوز روشن است)
+        // Step 1: prepare (the db is still running)
         run('rm -rf ' . escapeshellarg(WORK));
         run('mkdir -p /work');
         run('cp -a ' . escapeshellarg($chain[0]['dir']) . ' ' . escapeshellarg(WORK));
@@ -187,14 +187,14 @@ function cycle(bool $force): void {
               . ' --incremental-dir=' . escapeshellarg($chain[$i]['dir']));
         }
 
-        // مرحله ۲: جایگزینی datadir (db خاموش)
+        // Step 2: replace the datadir (db stopped)
         run('docker stop -t 120 ' . escapeshellarg(DB_CONTAINER), false);
         run('find ' . DATADIR . ' -mindepth 1 -delete');
         run(XB . ' --copy-back --target-dir=' . escapeshellarg(WORK)
           . ' --datadir=' . DATADIR);
         run("chown -R $owner " . DATADIR);
 
-        // مرحله ۳: روشن کردن
+        // Step 3: start the db
         run('docker start ' . escapeshellarg(DB_CONTAINER));
         waitHealthy();
 

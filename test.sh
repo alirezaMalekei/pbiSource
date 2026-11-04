@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# تست کامل بکاپ و ریستور: full + دو incremental روی یک دیتابیس منبع موقت،
-# سپس ریستور با xb.php و مقایسه‌ی نتیجه.
+# End-to-end backup/restore test: full + two incrementals on a temporary source database,
+# then restore with xb.php and compare the result.
 #
-# این اسکریپت باید کنار docker-compose.yml و .env پروژه باشد (مثلاً /opt/test/xb-test.sh)
-# استفاده:  ./xb-test.sh        (قبل از شروع تأیید می‌گیرد)
-#           ./xb-test.sh -y     (بدون تأیید)
+# Place this script next to the project's docker-compose.yml and .env (e.g. ~/test/xb-test.sh)
+# Usage:  ./xb-test.sh        (asks for confirmation first)
+#         ./xb-test.sh -y     (no confirmation)
 #
-# هشدار: دیتابیس، volumeها و بکاپ‌های همین پروژه را پاک می‌کند. فقط روی پروژه‌ی تست اجرا کنید.
+# WARNING: deletes this project's database, volumes and backups. Run only on a test project.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ---------- خواندن تنظیمات از .env ----------
+# ---------- read settings from .env ----------
 ENV=.env
-[ -f "$ENV" ] || { echo "خطا: فایل .env کنار این اسکریپت نیست"; exit 1; }
+[ -f "$ENV" ] || { echo "Error: .env is not next to this script"; exit 1; }
 get() { grep -E "^$1=" "$ENV" | tail -1 | cut -d= -f2- || true; }
 
 PROJECT=$(get PROJECT)
@@ -20,17 +20,17 @@ BACKUP_ROOT=$(get BACKUP_ROOT); BACKUP_ROOT=${BACKUP_ROOT:-/srv/backups}
 XB_IMAGE=$(get XB_IMAGE);       XB_IMAGE=${XB_IMAGE:-percona/percona-xtrabackup:8.0}
 PORT=$(get DB_PORT)
 
-[[ ${PROJECT:-} =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "خطا: PROJECT در .env نامعتبر یا خالی است"; exit 1; }
+[[ ${PROJECT:-} =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "Error: PROJECT in .env is invalid or empty"; exit 1; }
 
-DB="$PROJECT-db"                       # کانتینر دیتابیس اصلی (مطابق compose)
-BK="$BACKUP_ROOT/$PROJECT"             # پوشه‌ی بکاپ همین پروژه (مطابق compose)
-SRC="$PROJECT-xb-src"                  # کانتینر موقت منبع
-SRC_VOL="${PROJECT}_xb_src_data"       # volume موقت منبع
-PW=srcpass                             # رمز دیتابیس منبع (بعد از ریستور، رمز root دیتابیس اصلی هم همین می‌شود)
+DB="$PROJECT-db"                       # main database container (matches compose)
+BK="$BACKUP_ROOT/$PROJECT"             # this project's backup directory (matches compose)
+SRC="$PROJECT-xb-src"                  # temporary source container
+SRC_VOL="${PROJECT}_xb_src_data"       # temporary source volume
+PW=srcpass                             # source DB password (after restore, the main DB's root password becomes this too)
 
-# ایمیج دیتابیس از خود compose گرفته می‌شود تا همیشه با آن یکی باشد
+# The database image is read from compose itself so it always matches
 IMG=$(docker compose config | awk '/image: percona\/percona-server/ {print $2; exit}')
-[ -n "$IMG" ] || { echo "خطا: ایمیج percona-server در docker-compose.yml پیدا نشد"; exit 1; }
+[ -n "$IMG" ] || { echo "Error: percona-server image not found in docker-compose.yml"; exit 1; }
 
 XB="docker run --rm --user root --network container:$SRC -v $SRC_VOL:/var/lib/mysql -v $BK:/backups --entrypoint xtrabackup $XB_IMAGE"
 Q="docker exec $SRC mysql -uroot -p$PW -N -e"
@@ -42,28 +42,28 @@ cleanup_src() {
 }
 trap cleanup_src EXIT
 
-# ---------- تأیید ----------
-echo "پروژه: $PROJECT | دیتابیس: $DB | بکاپ: $BK | ایمیج: $IMG | xtrabackup: $XB_IMAGE"
-echo "این‌ها پاک می‌شوند: کانتینرها و volumeهای پروژه $PROJECT و همه‌ی محتوای $BK"
+# ---------- confirmation ----------
+echo "Project: $PROJECT | db: $DB | backups: $BK | image: $IMG | xtrabackup: $XB_IMAGE"
+echo "These will be deleted: containers and volumes of project $PROJECT, and everything in $BK"
 if [ "${1:-}" != "-y" ]; then
-  read -r -p "برای ادامه، نام پروژه را تایپ کنید ($PROJECT): " ANS
-  [ "$ANS" = "$PROJECT" ] || { echo "لغو شد."; exit 1; }
+  read -r -p "To continue, type the project name ($PROJECT): " ANS
+  [ "$ANS" = "$PROJECT" ] || { echo "Cancelled."; exit 1; }
 fi
 
-echo "== 0) پاکسازی =="
+echo "== 0) Cleanup =="
 docker compose down -v 2>/dev/null || true
 cleanup_src
 sudo mkdir -p "$BK"
 sudo rm -rf "${BK:?}"/*
 
-# بررسی پورت قبل از ساخت (پروژه الان پایین است، پس هر چیزی روی پورت از برنامه‌ی دیگری است)
+# Check the port before building (the project is down now, so anything on the port belongs to another program)
 if [ -n "${PORT:-}" ] && ss -Htln "sport = :$PORT" | grep -q .; then
-  echo "خطا: پورت $PORT روی این سرور در حال استفاده است:"
+  echo "Error: port $PORT is already in use on this server:"
   ss -tlnp "sport = :$PORT" 2>/dev/null || true
   exit 1
 fi
 
-echo "== 1) ساخت ایمیج و دیتابیس منبع =="
+echo "== 1) Build image and source database =="
 docker compose build scheduler
 docker pull "$XB_IMAGE"
 docker run -d --name "$SRC" -e MYSQL_ROOT_PASSWORD="$PW" -v "$SRC_VOL":/var/lib/mysql "$IMG" >/dev/null
@@ -82,24 +82,24 @@ echo "== 4) inc2 (+d) =="
 $Q "INSERT INTO testdb.t (v) VALUES ('d')"
 $XB --backup $BKARGS --target-dir=/backups/inc_2 --incremental-basedir=/backups/inc_1
 
-echo "== 5) حذف دیتابیس منبع =="
+echo "== 5) Remove the source database =="
 cleanup_src
 
-echo "== 6) اجرای برنامه اصلی =="
+echo "== 6) Run the main application =="
 docker compose up -d
 for i in $(seq 1 60); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "$DB" 2>/dev/null)" = "healthy" ] && break
-  [ "$i" -eq 60 ] && { echo "خطا: دیتابیس در زمان مناسب healthy نشد"; exit 1; }
+  [ "$i" -eq 60 ] && { echo "Error: the database did not become healthy in time"; exit 1; }
   sleep 5
 done
 docker compose exec -T scheduler php /app/xb.php status
 docker compose exec -T scheduler php /app/xb.php cycle --force
 
-echo "== 7) بررسی نتیجه =="
-# بعد از ریستور، رمز root همان رمز دیتابیس منبع (PW) است، نه MYSQL_ROOT_PASSWORD در .env
+echo "== 7) Verify the result =="
+# After the restore, the root password is the source DB's password (PW), not MYSQL_ROOT_PASSWORD from .env
 RES=$(docker exec "$DB" mysql -uroot -p"$PW" -N -e "SELECT GROUP_CONCAT(v ORDER BY id) FROM testdb.t")
-echo "نتیجه: $RES"
-[ "$RES" = "a,b,c,d" ] && echo "✅ تست موفق" || { echo "❌ تست ناموفق"; exit 1; }
+echo "Result: $RES"
+[ "$RES" = "a,b,c,d" ] && echo "✅ Test passed" || { echo "❌ Test failed"; exit 1; }
 
-echo "== 8) تست skip =="
+echo "== 8) Skip test =="
 docker compose exec -T scheduler php /app/xb.php cycle
