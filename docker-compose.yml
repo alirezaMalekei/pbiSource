@@ -1,15 +1,15 @@
-name: pbisource
+name: ${PROJECT:?PROJECT را در .env بنویسید}
 
 services:
   db:
     image: percona/percona-server:8.0.35-27
-    container_name: pbisource-db
+    container_name: ${PROJECT}-db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD را در .env بنویسید}
       TZ: ${TZ:-UTC}
     ports:
-      - "3306:3306"          # برای دسترسی مستقیم از بیرون (بخش امنیت را ببینید)
+      - "${DB_BIND:-0.0.0.0}:${DB_PORT:?DB_PORT را در .env بنویسید}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -21,16 +21,19 @@ services:
 
   scheduler:
     build: .
-    container_name: pbisource-scheduler
+    container_name: ${PROJECT}-scheduler
     restart: unless-stopped
     command: ["sleep", "infinity"]
     environment:
       TZ: ${TZ:-UTC}
-      DB_CONTAINER: pbisource-db
-      DB_UID: "1001"
+      PROJECT: ${PROJECT}
+      DB_CONTAINER: ${PROJECT}-db
+      DB_UID: 1001
+      DB_VOLUME: ${PROJECT}_mysql_data
+      BACKUP_HOST_DIR: ${BACKUP_ROOT:?BACKUP_ROOT را در .env بنویسید}/${PROJECT}
     volumes:
       - mysql_data:/var/lib/mysql
-      - /srv/backups:/backups
+      - ${BACKUP_ROOT}/${PROJECT}:/backups
       - restore_work:/work
       - restore_state:/state
       - /var/run/docker.sock:/var/run/docker.sock

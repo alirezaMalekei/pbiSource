@@ -1,11 +1,56 @@
 <?php
 // php xb.php cycle [--force]  -> ساخت دوباره دیتابیس از زنجیره بک‌آپ
 // php xb.php status           -> نمایش زنجیره و آخرین LSN اعمال‌شده
+//
+// همه‌ی نام‌های وابسته به پروژه از متغیرهای محیطی (docker-compose / .env) خوانده می‌شود.
+// متغیرهای ضروری: PROJECT, DB_CONTAINER, DB_VOLUME, BACKUP_HOST_DIR
+// متغیرهای اختیاری: DB_UID, TZ, XB_IMAGE
 
 date_default_timezone_set(getenv('TZ') ?: 'UTC');
 
-define('DB_CONTAINER', getenv('DB_CONTAINER') ?: 'pbisource-db');
+// متغیر ضروری: اگر نبود، با خطا متوقف شو (هیچ مقدار پیش‌فرضی نداریم تا روی پروژه‌ی اشتباه عمل نشود)
+function need(string $name): string {
+    $v = getenv($name);
+    if ($v === false || $v === '') {
+        fwrite(STDERR, "خطا: متغیر محیطی $name تنظیم نشده است\n");
+        exit(1);
+    }
+    return $v;
+}
+
+$PROJECT   = need('PROJECT');
+$DB_VOLUME = need('DB_VOLUME');          // مثلاً test_mysql_data
+$HOST_BKP  = need('BACKUP_HOST_DIR');    // مثلاً /srv/backups/test (مسیر روی سرور میزبان)
+$XB_IMAGE  = getenv('XB_IMAGE') ?: 'percona/percona-xtrabackup:8.0';
+
+if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $PROJECT)) {
+    fwrite(STDERR, "خطا: PROJECT نامعتبر است (فقط حروف کوچک، عدد، - و _)\n");
+    exit(1);
+}
+if ($HOST_BKP[0] !== '/') {
+    fwrite(STDERR, "خطا: BACKUP_HOST_DIR باید مسیر مطلق باشد\n");
+    exit(1);
+}
+
+define('DB_CONTAINER', need('DB_CONTAINER'));
 define('DEFAULT_UID', (int)(getenv('DB_UID') ?: 1001));
+
+// محافظ: نام کانتینر، volume و پوشه‌ی بکاپ باید همگی متعلق به همین پروژه باشند
+if (DB_CONTAINER !== "$PROJECT-db") {
+    fwrite(STDERR, "خطا: DB_CONTAINER (" . DB_CONTAINER . ") با PROJECT ($PROJECT-db) هماهنگ نیست\n");
+    exit(1);
+}
+if ($DB_VOLUME !== "{$PROJECT}_mysql_data") {
+    fwrite(STDERR, "خطا: DB_VOLUME ($DB_VOLUME) با PROJECT ({$PROJECT}_mysql_data) هماهنگ نیست\n");
+    exit(1);
+}
+if (basename($HOST_BKP) !== $PROJECT) {
+    fwrite(STDERR, "خطا: BACKUP_HOST_DIR ($HOST_BKP) باید به پوشه‌ای با نام پروژه ($PROJECT) ختم شود\n");
+    exit(1);
+}
+
+$WORK_VOLUME = "{$PROJECT}_restore_work";
+
 const BACKUPS = '/backups';
 const WORK    = '/work/restore';
 const DATADIR = '/var/lib/mysql';
@@ -13,11 +58,12 @@ const STATE   = '/state/last_restored_lsn';
 const LOCK    = '/state/xb.lock';
 
 // xtrabackup در یک کانتینر موقت از ایمیج رسمی اجرا می‌شود
-const XB = 'docker run --rm --user root --entrypoint xtrabackup '
-         . '-v pbisource_mysql_data:/var/lib/mysql '
-         . '-v pbisource_restore_work:/work '
-         . '-v /srv/backups:/backups '
-         . 'percona/percona-xtrabackup:8.0';
+// این دستور روی میزبان اجرا می‌شود، پس نام volume و مسیر واقعی سرور لازم است
+define('XB', 'docker run --rm --user root --entrypoint xtrabackup '
+    . '-v ' . escapeshellarg($DB_VOLUME) . ':/var/lib/mysql '
+    . '-v ' . escapeshellarg($WORK_VOLUME) . ':/work '
+    . '-v ' . escapeshellarg($HOST_BKP) . ':/backups '
+    . escapeshellarg($XB_IMAGE));
 
 function logm(string $m): void { echo '[' . date('Y-m-d H:i:s') . "] $m\n"; }
 
@@ -32,6 +78,14 @@ function run(string $cmd, bool $must = true): int {
 
 function out(string $cmd): string {
     return trim((string)shell_exec($cmd . ' 2>/dev/null'));
+}
+
+// اگر volume وجود نداشته باشد، docker run بی‌صدا یک volume خالی می‌سازد؛ پس قبل از شروع چک می‌کنیم
+function requireVolume(string $name): void {
+    passthru('docker volume inspect ' . escapeshellarg($name) . ' >/dev/null 2>&1', $code);
+    if ($code !== 0) {
+        throw new RuntimeException("Volume $name وجود ندارد (نام پروژه یا DB_VOLUME را بررسی کنید)");
+    }
 }
 
 // پوشه‌های .partial_* با glob دیده نمی‌شوند
@@ -87,9 +141,21 @@ function waitHealthy(int $timeout = 300): void {
 }
 
 function cycle(bool $force): void {
+    global $DB_VOLUME, $WORK_VOLUME, $PROJECT, $HOST_BKP, $XB_IMAGE;
+
     @mkdir('/state', 0755, true);
     $lock = fopen(LOCK, 'c');
     if (!flock($lock, LOCK_EX | LOCK_NB)) { logm('Another cycle is running. Exit.'); return; }
+
+    logm("Project: $PROJECT | db: " . DB_CONTAINER . " | volume: $DB_VOLUME | backups: $HOST_BKP | xtrabackup: $XB_IMAGE");
+
+    try {
+        requireVolume($DB_VOLUME);
+        requireVolume($WORK_VOLUME);
+    } catch (Throwable $e) {
+        logm('ERROR: ' . $e->getMessage());
+        exit(1);
+    }
 
     $chain = bestChain(discover());
     if (!$chain) { logm('No valid backup chain found in ' . BACKUPS); exit(2); }
@@ -143,6 +209,8 @@ function cycle(bool $force): void {
 }
 
 function status(): void {
+    global $PROJECT;
+    echo "Project: $PROJECT\n";
     $chain = bestChain(discover());
     if (!$chain) echo "No valid chain.\n";
     foreach ($chain as $c) echo "{$c['type']}  {$c['dir']}  [{$c['from']} -> {$c['to']}]\n";
