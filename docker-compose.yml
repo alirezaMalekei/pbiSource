@@ -2,13 +2,14 @@ name: pbisource
 
 services:
   db:
-    # نسخه باید با xtrabackup (8.0.35) هم‌خوان باشد. وجود tag را با docker pull بررسی کنید
     image: percona/percona-server:8.0.35-27
     container_name: pbisource-db
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       TZ: ${TZ:-UTC}
+    ports:
+      - "3306:3306"          # برای دسترسی مستقیم از بیرون (بخش امنیت را ببینید)
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -27,8 +28,6 @@ services:
       TZ: ${TZ:-UTC}
       DB_CONTAINER: pbisource-db
       DB_UID: "1001"
-    ports:
-      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - /srv/backups:/backups
