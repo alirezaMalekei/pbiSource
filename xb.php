@@ -89,14 +89,41 @@ function requireVolume(string $name): void {
 }
 
 // .partial_* directories are not matched by glob
+// function discover(): array {
+//     $items = [];
+//     foreach (glob(BACKUPS . '/*/xtrabackup_checkpoints') as $f) {
+//         $c = parse_ini_file($f, false, INI_SCANNER_RAW);
+//         if (!$c || !isset($c['backup_type'], $c['from_lsn'], $c['to_lsn'])) continue;
+//         $items[] = [
+//             'dir'  => dirname($f),
+//             'type' => $c['backup_type'] === 'full-backuped' ? 'full' : 'inc',
+//             'from' => (int)$c['from_lsn'],
+//             'to'   => (int)$c['to_lsn'],
+//         ];
+//     }
+//     return $items;
+// }
+
 function discover(): array {
     $items = [];
-    foreach (glob(BACKUPS . '/*/xtrabackup_checkpoints') as $f) {
-        $c = parse_ini_file($f, false, INI_SCANNER_RAW);
-        if (!$c || !isset($c['backup_type'], $c['from_lsn'], $c['to_lsn'])) continue;
+    if (!is_dir(BACKUPS)) return $items;
+
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(BACKUPS, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $file) {
+        if ($file->getFilename() !== 'xtrabackup_checkpoints') continue;
+        if (!$file->isReadable()) continue;
+
+        $c = parse_ini_file($file->getPathname(), false, INI_SCANNER_RAW);
+        if (!$c || !isset($c['from_lsn'], $c['to_lsn'])) continue;
+
+        $type   = strtolower(trim($c['backup_type'] ?? ''));
+        $isFull = in_array($type, ['full-backuped', 'full-prepared', 'full', 'full_backup'], true);
+
         $items[] = [
-            'dir'  => dirname($f),
-            'type' => $c['backup_type'] === 'full-backuped' ? 'full' : 'inc',
+            'dir'  => dirname($file->getPathname()),
+            'type' => $isFull ? 'full' : 'inc',
             'from' => (int)$c['from_lsn'],
             'to'   => (int)$c['to_lsn'],
         ];
