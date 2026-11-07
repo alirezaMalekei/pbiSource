@@ -26,7 +26,7 @@ The folder name becomes the project name. Use lowercase letters, digits, `-` and
 
 ```bash
 cd ~
-git clone <repo-url> myproject      # creates ~/myproject
+git clone https://github.com/alirezaMalekei/pbiSource.git myproject      # creates ~/myproject
 cd myproject
 ```
 
@@ -153,7 +153,7 @@ Important consequences:
 - **`pbi_user` (section 7) disappears after a restore unless it exists in the source database.** Create it on the source server, or re-create it after each restore.
 - To run it automatically, schedule it on the host, for example in `crontab -e`:
   ```cron
-  */15 * * * * cd /home/<you>/myproject && docker compose exec -T scheduler php /app/xb.php cycle >> /var/log/myproject-cycle.log 2>&1
+  0 11 * * * cd ~/pbisources/myproject && docker compose exec -T scheduler php /app/xb.php cycle >> ~/pbisources/myproject-cycle.log 2>&1
   ```
 
 ---

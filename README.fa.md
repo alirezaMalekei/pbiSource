@@ -26,7 +26,7 @@
 
 ```bash
 cd ~
-git clone <repo-url> myproject      # پوشه‌ی ~/myproject ساخته می‌شود
+git clone https://github.com/alirezaMalekei/pbiSource.git myproject      # پوشه‌ی ~/myproject ساخته می‌شود
 cd myproject
 ```
 
@@ -153,7 +153,7 @@ docker compose exec -T scheduler php /app/xb.php cycle --force   # حتی اگر
 - **کاربر `pbi_user` (بخش ۷) بعد از ریستور از بین می‌رود، مگر اینکه در دیتابیس مبدأ هم وجود داشته باشد.** آن را روی سرور مبدأ بسازید یا بعد از هر ریستور دوباره بسازید.
 - برای اجرای خودکار، آن را روی میزبان زمان‌بندی کنید، مثلاً در `crontab -e`:
   ```cron
-  */15 * * * * cd /home/<you>/myproject && docker compose exec -T scheduler php /app/xb.php cycle >> /var/log/myproject-cycle.log 2>&1
+  0 11 * * * cd ~/pbisources/myproject && docker compose exec -T scheduler php /app/xb.php cycle >> ~/pbisources/myproject-cycle.log 2>&1
   ```
 
 ---
